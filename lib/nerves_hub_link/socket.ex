@@ -130,6 +130,8 @@ defmodule NervesHubLink.Socket do
       |> assign(joined_at: nil)
       |> assign(firmware_validation_timer_pid: nil)
       |> assign(redirect_count: 0)
+      |> assign(reconnect_attempt: 0)
+      |> assign(reconnect_timer: nil)
 
     if config.connect_wait_for_network do
       schedule_network_availability_check()
@@ -146,10 +148,12 @@ defmodule NervesHubLink.Socket do
     opts = [
       mint_opts: mint_opts(config),
       extensions: mint_extensions(config),
-      headers: config.socket[:headers] || [],
+      headers: fresh_auth_headers(config),
       uri: config.socket[:url],
       rejoin_after_msec: List.flatten([config.rejoin_after]),
-      reconnect_after_msec: config.socket[:reconnect_after_msec],
+      # We drive reconnect timing ourselves via :reconnect_now so headers can
+      # be re-signed at dial time. Slipstream's own backoff list is bypassed.
+      reconnect_after_msec: [0],
       heartbeat_interval_msec: config.heartbeat_interval_msec
     ]
 
@@ -181,6 +185,7 @@ defmodule NervesHubLink.Socket do
       |> maybe_join_console()
       |> assign(connected_at: System.monotonic_time(:millisecond))
       |> assign(redirect_count: 0)
+      |> assign(reconnect_attempt: 0)
 
     Alarms.clear_alarm(NervesHubLink.Disconnected)
 
@@ -631,6 +636,15 @@ defmodule NervesHubLink.Socket do
     end
   end
 
+  def handle_info(:reconnect_now, socket) do
+    socket =
+      socket
+      |> assign(reconnect_timer: nil)
+      |> refresh_auth_headers()
+
+    {:noreply, reconnect(socket)}
+  end
+
   def handle_info(msg, socket) do
     Logger.warning("[#{inspect(__MODULE__)}] Unhandled handle_info: #{inspect(msg)}")
     {:noreply, socket}
@@ -655,30 +669,23 @@ defmodule NervesHubLink.Socket do
   def handle_disconnect(reason, socket) do
     _ = Client.handle_error(reason)
     :alarm_handler.set_alarm({NervesHubLink.Disconnected, [reason: reason]})
-    channel_config = %{socket.channel_config | reconnect_after_msec: Client.reconnect_backoff()}
 
-    channel_config =
-      case Configurator.fetch_configurator() do
-        SharedSecret ->
-          # TODO: I don't know when reconnect/1 actually gets validated. It could be that
-          # the signature we create here will be too old before the headers are used
-          # in a connection attempt again
-          headers = SharedSecret.headers(socket.assigns.config)
-          %{channel_config | headers: headers}
+    socket = cancel_reconnect_timer(socket)
 
-        _ ->
-          channel_config
-      end
+    case apply_redirect(reason, socket) do
+      {:reconnect, socket} ->
+        {:ok, schedule_reconnect(socket)}
 
-    %{socket | channel_config: channel_config}
-    |> handle_redirect(reason)
+      {:stop, socket} ->
+        {:ok, socket}
+    end
   end
 
-  defp handle_redirect(
-         %{assigns: %{redirect_count: redirect_count}} = socket,
+  defp apply_redirect(
          {:error,
           {:upgrade_failure,
-           %{reason: %UpgradeFailureError{status_code: status, headers: headers}}}} = error
+           %{reason: %UpgradeFailureError{status_code: status, headers: headers}}}} = error,
+         %{assigns: %{redirect_count: redirect_count}} = socket
        )
        when status >= 300 and status < 400 do
     if redirect_count < @max_redirects do
@@ -697,17 +704,60 @@ defmodule NervesHubLink.Socket do
 
       Logger.info("[NervesHubLink] redirect received : #{URI.to_string(uri)}")
 
-      %{socket | channel_config: channel_config}
-      |> update(:redirect_count, &(&1 + 1))
-      |> reconnect()
+      socket =
+        %{socket | channel_config: channel_config}
+        |> update(:redirect_count, &(&1 + 1))
+
+      {:reconnect, socket}
     else
       Logger.error("[NervesHubLink] maximum redirect count reached : #{inspect(error)}")
-      {:ok, socket}
+      {:stop, socket}
     end
   end
 
-  defp handle_redirect(socket, _reason) do
-    reconnect(socket)
+  defp apply_redirect(_reason, socket), do: {:reconnect, socket}
+
+  defp schedule_reconnect(socket) do
+    backoff_list = Client.reconnect_backoff()
+    attempt = socket.assigns.reconnect_attempt
+    delay = Enum.at(backoff_list, attempt) || List.last(backoff_list) || 0
+
+    timer = Process.send_after(self(), :reconnect_now, delay)
+
+    socket
+    |> assign(reconnect_timer: timer)
+    |> assign(reconnect_attempt: attempt + 1)
+  end
+
+  defp cancel_reconnect_timer(%{assigns: %{reconnect_timer: nil}} = socket), do: socket
+
+  defp cancel_reconnect_timer(%{assigns: %{reconnect_timer: timer}} = socket) do
+    _ = Process.cancel_timer(timer)
+    assign(socket, reconnect_timer: nil)
+  end
+
+  # Re-sign auth headers immediately before dialing, so the x-nh-time in the
+  # signature reflects the actual connection-attempt time rather than the
+  # disconnect time. Otherwise large reconnect backoffs (or boot-time clock
+  # skew that resolves between disconnect and dial) can produce signatures
+  # the server rejects as stale.
+  defp refresh_auth_headers(socket) do
+    case Configurator.fetch_configurator() do
+      SharedSecret ->
+        headers = SharedSecret.headers(socket.assigns.config)
+        channel_config = %{socket.channel_config | headers: headers}
+        %{socket | channel_config: channel_config}
+
+      _ ->
+        socket
+    end
+  end
+
+  defp fresh_auth_headers(config) do
+    case Configurator.fetch_configurator() do
+      SharedSecret -> SharedSecret.headers(config)
+      _ -> config.socket[:headers] || []
+    end
   end
 
   @impl Slipstream
