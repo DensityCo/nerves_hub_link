@@ -171,7 +171,10 @@ defmodule NervesHubLink.MixProject do
       {:nimble_options, "~> 1.0"},
       {:plug_crypto, "~> 2.0"},
       {:bandit, "~> 1.12.0", only: :test},
-      {:slipstream, "~> 1.0 or ~> 0.8"},
+      # Bounds the WebSocket upgrade response wait. Return to a Hex requirement
+      # after https://github.com/CuatroElixir/slipstream/pull/88 is released.
+      {:slipstream,
+       github: "CuatroElixir/slipstream", ref: "773525e1e7f28a3a00d819ec0173345f3daa8a32"},
       {:tpm, "~> 0.2.0", optional: true},
       {:whenwhere, "~> 0.1.2"},
       {:x509, "~> 0.5"}

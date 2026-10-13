@@ -76,6 +76,16 @@ defmodule NervesHubLink.SocketMessagesTest do
     {:ok, socket: socket, data_path: data_path}
   end
 
+  describe "connection configuration" do
+    @describetag socket_config: [upgrade_timeout_msec: 1_234]
+
+    test "passes the WebSocket upgrade timeout to Slipstream", %{socket: socket} do
+      %{channel_config: connect_config} = :sys.get_state(socket)
+
+      assert connect_config.upgrade_timeout_msec == 1_234
+    end
+  end
+
   describe "update mode" do
     setup :join_device_topic
 

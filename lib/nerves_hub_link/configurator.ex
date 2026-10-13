@@ -64,6 +64,7 @@ defmodule NervesHubLink.Configurator do
               socket: [],
               ssl: [],
               tpm: [],
+              upgrade_timeout_msec: 10_000,
               updater: StreamingUpdater
 
     @type t() :: %__MODULE__{
@@ -94,6 +95,7 @@ defmodule NervesHubLink.Configurator do
             socket: any(),
             ssl: [:ssl.tls_client_option()],
             tpm: any(),
+            upgrade_timeout_msec: non_neg_integer(),
             updater: NervesHubLink.UpdateManager.Updater.t()
           }
   end

@@ -69,6 +69,19 @@ Then you specify which configurator `NervesHubLink` should use in `config.exs`:
 config :nerves_hub_link, configurator: MyApp.Configurator
 ```
 
+## Connection liveness
+
+NervesHubLink limits how long it waits for the server to answer the WebSocket
+upgrade request. This prevents a connection from remaining alive indefinitely
+when the TCP or TLS connection succeeds but the HTTP upgrade response never
+arrives. The default is 10 seconds:
+
+```elixir
+config :nerves_hub_link, upgrade_timeout_msec: 10_000
+```
+
+Set the value to `0` to disable the timeout.
+
 ## Retrying firmware downloads
 
 Firmware and Archive downloads are resilient to network issues and can be retried automatically.

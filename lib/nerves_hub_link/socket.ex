@@ -212,6 +212,7 @@ defmodule NervesHubLink.Socket do
       rejoin_after_msec: List.flatten([config.rejoin_after]),
       reconnect_after_msec: config.socket[:reconnect_after_msec],
       heartbeat_interval_msec: config.heartbeat_interval_msec,
+      upgrade_timeout_msec: config.upgrade_timeout_msec,
       serializer: serializer,
       # Lets tests drive this client with `Slipstream.SocketTest` instead of
       # opening a real connection.
